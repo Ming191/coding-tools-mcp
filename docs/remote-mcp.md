@@ -30,6 +30,34 @@ CODING_TOOLS_MCP_AUTH_MODE=bearer integrations/tunnels/tunnel.sh cloudflared /pa
 
 The scripts also support `ngrok` and `devtunnel`.
 
+### Stable Cloudflare tunnel
+
+The default `cloudflared tunnel --url` starts a temporary Quick Tunnel with a
+random hostname on each launch. For a stable hostname, create a **remotely
+managed named tunnel** in Cloudflare, then configure its public hostname to
+route to `http://127.0.0.1:8765` (or your `CODING_TOOLS_MCP_PORT`).
+
+Set **one** Cloudflare-supported credential environment variable and launch
+the same script. It automatically runs `cloudflared tunnel run` rather than
+the Quick Tunnel. For example, with a private token file:
+
+```bash
+export TUNNEL_TOKEN_FILE=/path/to/private/cloudflare-tunnel-token.txt
+export CODING_TOOLS_MCP_SERVER_URL=https://mcp.example.com
+CODING_TOOLS_MCP_AUTH_MODE=oauth integrations/tunnels/tunnel.sh cloudflared /path/to/repo
+```
+
+`TUNNEL_TOKEN` is also supported instead of `TUNNEL_TOKEN_FILE`. Keep tokens
+out of the repository, shell history and command-line arguments; limit token
+file permissions. Set `CODING_TOOLS_MCP_SERVER_URL` to the actual public HTTPS
+origin **without** `/mcp` so OAuth discovery and audience use the stable host.
+The Cloudflare tunnel token only authenticates the connector to Cloudflare;
+MCP still needs its own bearer or OAuth authentication.
+
+Named tunnels preserve the hostname, **not** the process-local OAuth dynamic
+client registrations, which currently reset after server restarts. A stable
+hostname is not a substitute for fixing that separate limitation.
+
 ## OAuth 2.1 + dynamic registration
 
 For clients that cannot set a static `Authorization` header but support MCP

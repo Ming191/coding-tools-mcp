@@ -33,6 +33,10 @@ Environment:
   CODING_TOOLS_MCP_AUTH_TOKEN=<existing-token>
   CODING_TOOLS_MCP_SERVER_BIN=coding-tools-mcp
 
+Cloudflare named-tunnel mode (optional):
+  TUNNEL_TOKEN=<token>              or TUNNEL_TOKEN_FILE=<private-token-file>
+  CODING_TOOLS_MCP_SERVER_URL=https://mcp.example.com
+
 OAuth mode can infer its public URL from the tunnel request. A password is
 generated and printed at startup if unset; client_id/client_secret are optional.
 Set CODING_TOOLS_MCP_SERVER_URL only when you want to pin a stable issuer.

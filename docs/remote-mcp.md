@@ -54,12 +54,15 @@ origin **without** `/mcp` so OAuth discovery and audience use the stable host.
 The Cloudflare tunnel token only authenticates the connector to Cloudflare;
 MCP still needs its own bearer or OAuth authentication.
 
-Named tunnels preserve the hostname, not memory. For restart-safe OAuth client
-registration, set a **stable** `CODING_TOOLS_MCP_OAUTH_TOKEN_SECRET` (32 or more
-random bytes in hexadecimal). With this key, the server issues HMAC-authenticated,
-self-contained dynamic `client_id` values; the registered redirects, auth method
-and confidential-client secret digest remain verifiable after a restart, without
-persisting OAuth client secrets or using the runner's ephemeral disk.
+Named tunnels preserve the hostname, not memory. Restart-safe OAuth requires
+a **stable signing key**. Set `CODING_TOOLS_MCP_OAUTH_TOKEN_SECRET` explicitly,
+or, for the GitHub Actions sandbox, reuse an existing
+`CODING_TOOLS_MCP_AUTH_TOKEN` Actions secret of at least 32 characters. The
+workflow derives a separate signing key using HMAC-SHA256 and a fixed purpose
+label. With that key, the server issues authenticated, self-contained dynamic
+`client_id` values; redirects, auth method and confidential-client secret digest
+remain verifiable after a restart without persisting secrets on the runner.
+Rotating the underlying bearer secret also rotates the derived OAuth key.
 
 ## OAuth 2.1 + dynamic registration
 
@@ -121,13 +124,18 @@ CODING_TOOLS_MCP_OAUTH_TOKEN_SECRET=<64-or-more-hex-characters>
 CODING_TOOLS_MCP_OAUTH_TOKEN_TTL=86400
 ```
 
-**GitHub Actions sandbox:** set repository or environment secret
-`CODING_TOOLS_MCP_OAUTH_TOKEN_SECRET` with the output of
-`openssl rand -hex 32`. Keep the value unchanged across workflow runs and
-pass it to the container. The fork's `start-sandbox.yml` enforces this setting
-and (when `image=source`, its default) builds the current
-`Ming191/coding-tools-mcp` source instead of pulling an unpatched upstream
-image. The optional `source_ref` input pins the source branch or tag.
+**GitHub Actions sandbox:** if you already have the repository or environment
+secret `CODING_TOOLS_MCP_AUTH_TOKEN` (at least 32 characters, randomly
+generated), **no second secret is required**. The `start-sandbox.yml` workflow
+derives a distinct OAuth HMAC/JWT signing key from that stable value. It never
+prints or commits either secret. Alternatively, supply a dedicated
+`CODING_TOOLS_MCP_OAUTH_TOKEN_SECRET` (32+ random bytes, hex encoded) to
+override derivation; the dedicated key wins if both are configured. A generated
+per-run bearer token or a `workflow_dispatch` input alone is **not**
+a stable source for OAuth registration. The workflow fails clearly instead of
+silently making non-persistent OAuth identities.
+The fork's `start-sandbox.yml` (when `image=source`, its default) builds the
+current `Ming191/coding-tools-mcp` source instead of an unpatched upstream image. The optional `source_ref` input pins the source branch or tag.
 A new runner will not preserve workspace state or in-flight authorization codes,
 only the OAuth client identity and unexpired tokens. **Existing random client IDs
 issued by older builds cannot be recovered**; connect the ChatGPT MCP app once

@@ -285,6 +285,7 @@ jobs:
           MCP_PORT: ${{ steps.settings.outputs.port }}
           MCP_TOKEN_FILE: ${{ steps.settings.outputs.token_file }}
           MCP_OAUTH_PASSWORD: ${{ secrets.CODING_TOOLS_MCP_OAUTH_PASSWORD }}
+          MCP_AUTH_TOKEN_SECRET: ${{ secrets.CODING_TOOLS_MCP_AUTH_TOKEN }}
           MCP_OAUTH_TOKEN_SECRET: ${{ secrets.CODING_TOOLS_MCP_OAUTH_TOKEN_SECRET }}
           PERMISSION_MODE: ${{ steps.settings.outputs.permission_mode }}
           PUBLIC_SERVER_URL: ${{ steps.settings.outputs.public_server_url }}
@@ -298,9 +299,30 @@ jobs:
             exit 1
           fi
           echo "::add-mask::$MCP_OAUTH_PASSWORD"
+          # Prefer a dedicated OAuth key when present. Otherwise derive a
+          # domain-separated OAuth key from the existing stable bearer secret,
+          # which persists across ephemeral GitHub Actions runners.
+          # Do not derive from a generated per-run token or workflow input.
           if [[ -z "${MCP_OAUTH_TOKEN_SECRET:-}" ]]; then
-            echo "Missing CODING_TOOLS_MCP_OAUTH_TOKEN_SECRET GitHub Actions secret" >&2
-            exit 1
+            if [[ -z "${MCP_AUTH_TOKEN_SECRET:-}" ]]; then
+              echo "OAuth needs a stable signing key: configure CODING_TOOLS_MCP_AUTH_TOKEN or CODING_TOOLS_MCP_OAUTH_TOKEN_SECRET as an Actions secret" >&2
+              exit 1
+            fi
+            MCP_OAUTH_TOKEN_SECRET="$(python3 - <<'PY'
+          import hashlib
+          import hmac
+          import os
+
+          bearer = os.environ["MCP_AUTH_TOKEN_SECRET"]
+          if len(bearer) < 32:
+              raise SystemExit("CODING_TOOLS_MCP_AUTH_TOKEN must have at least 32 characters when used as an OAuth signing key source")
+          print(hmac.new(
+              bearer.encode("utf-8"),
+              b"coding-tools-mcp/oauth-token-secret/v1",
+              hashlib.sha256,
+          ).hexdigest())
+          PY
+          )"
           fi
           echo "::add-mask::$MCP_OAUTH_TOKEN_SECRET"
           if ! [[ "$MCP_OAUTH_TOKEN_SECRET" =~ ^[[:xdigit:]]{64,}$ ]] || (( ${#MCP_OAUTH_TOKEN_SECRET} % 2 != 0 )); then

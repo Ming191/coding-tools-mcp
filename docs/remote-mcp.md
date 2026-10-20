@@ -54,9 +54,12 @@ origin **without** `/mcp` so OAuth discovery and audience use the stable host.
 The Cloudflare tunnel token only authenticates the connector to Cloudflare;
 MCP still needs its own bearer or OAuth authentication.
 
-Named tunnels preserve the hostname, **not** the process-local OAuth dynamic
-client registrations, which currently reset after server restarts. A stable
-hostname is not a substitute for fixing that separate limitation.
+Named tunnels preserve the hostname, not memory. For restart-safe OAuth client
+registration, set a **stable** `CODING_TOOLS_MCP_OAUTH_TOKEN_SECRET` (32 or more
+random bytes in hexadecimal). With this key, the server issues HMAC-authenticated,
+self-contained dynamic `client_id` values; the registered redirects, auth method
+and confidential-client secret digest remain verifiable after a restart, without
+persisting OAuth client secrets or using the runner's ephemeral disk.
 
 ## OAuth 2.1 + dynamic registration
 
@@ -90,8 +93,12 @@ Registration rules:
 - Supported token authentication methods are `none`, `client_secret_post`, and
   `client_secret_basic`. A client must use the method it registered.
 - Client secrets are stored as digests. Public clients rely on mandatory PKCE.
-- Registrations and authorization codes are process-local. A restart requires
-  dynamic clients to register again.
+- With a stable `CODING_TOOLS_MCP_OAUTH_TOKEN_SECRET`, new dynamic client IDs
+  remain valid after restarts. Without that key, registrations are process-local.
+  Authorization codes remain process-local, single-use and five-minute-lived.
+- Signed IDs do not provide revocation of individual clients. Rotating the
+  stable key revokes all previously signed dynamic registrations and tokens.
+  Do not put the signing key in source control or a publicly uploaded artifact.
 
 Authorization codes are single-use and expire after five minutes. Access tokens
 default to 24 hours and are bound to the registered client and exact MCP
@@ -106,12 +113,26 @@ CODING_TOOLS_MCP_OAUTH_PASSWORD=<authorize-page-password>
 # Optional stable public origin, without /mcp:
 CODING_TOOLS_MCP_SERVER_URL=https://mcp.example.com
 
-# Optional stable HS256 key; hex-encoded bytes:
-CODING_TOOLS_MCP_OAUTH_TOKEN_SECRET=<hex-key>
+# Stable HS256 key, also used to authenticate restart-safe DCR client IDs.
+# Generate once (e.g. 'openssl rand -hex 32') and store as a secret:
+CODING_TOOLS_MCP_OAUTH_TOKEN_SECRET=<64-or-more-hex-characters>
 
 # Optional token lifetime in seconds; default 86400:
 CODING_TOOLS_MCP_OAUTH_TOKEN_TTL=86400
 ```
+
+**GitHub Actions sandbox:** set repository or environment secret
+`CODING_TOOLS_MCP_OAUTH_TOKEN_SECRET` with the output of
+`openssl rand -hex 32`. Keep the value unchanged across workflow runs and
+pass it to the container. The fork's `start-sandbox.yml` enforces this setting
+and (when `image=source`, its default) builds the current
+`Ming191/coding-tools-mcp` source instead of pulling an unpatched upstream
+image. The optional `source_ref` input pins the source branch or tag.
+A new runner will not preserve workspace state or in-flight authorization codes,
+only the OAuth client identity and unexpired tokens. **Existing random client IDs
+issued by older builds cannot be recovered**; connect the ChatGPT MCP app once
+after deploying this change so a new signed ID is registered. Later restarts
+do not need a new registration if the hostname and signing key stay the same.
 
 With an ephemeral tunnel, omit `CODING_TOOLS_MCP_SERVER_URL`; the server derives
 the external origin from the request. For a stable hostname, pin it so issuer,

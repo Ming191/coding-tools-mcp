@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
+import json
 import re
 import secrets
 import threading
@@ -25,6 +27,9 @@ OAUTH_RESPONSE_TYPES_SUPPORTED = ("code",)
 MAX_REDIRECT_URIS = 10
 MAX_REGISTERED_CLIENTS = 1_024
 MAX_PENDING_CODES = 256
+SIGNED_CLIENT_ID_PREFIX = "ctm1"
+# Limits abuse of self-contained client IDs in authorize URLs and JWT subjects.
+MAX_SIGNED_CLIENT_ID_CHARS = 8_192
 
 
 @dataclass(frozen=True)
@@ -50,7 +55,15 @@ class OAuthClient:
 class OAuthClientRegistry:
     """Thread-safe RFC 7591 client registry for one server process."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, signing_key: bytes | None = None) -> None:
+        # Without a stable signing key the legacy in-memory registry is retained.
+        # With one, DCR client IDs carry authenticated metadata and survive restarts.
+        if signing_key is not None and len(signing_key) < 32:
+            raise ValueError("OAuth client signing key must be at least 32 bytes")
+        self._signing_key = (
+            hmac.new(signing_key, b"coding-tools-mcp/oauth-dcr-client/v1", hashlib.sha256).digest()
+            if signing_key is not None else None
+        )
         self._clients: dict[str, OAuthClient] = {}
         self._lock = threading.Lock()
 
@@ -96,18 +109,47 @@ class OAuthClientRegistry:
         with self._lock:
             if len(self._clients) >= MAX_REGISTERED_CLIENTS:
                 raise ValueError("dynamic client registration limit reached")
-            client_id = secrets.token_urlsafe(24)
-            while client_id in self._clients:
-                client_id = secrets.token_urlsafe(24)
             client_secret = secrets.token_urlsafe(32) if method != "none" else None
+            client_name = _optional_text(metadata.get("client_name"), 200)
+            digest = _secret_digest(client_secret) if client_secret is not None else None
+            issued_at = int(time.time())
+            if self._signing_key is None:
+                client_id = secrets.token_urlsafe(24)
+                while client_id in self._clients:
+                    client_id = secrets.token_urlsafe(24)
+            else:
+                # No database is available on ephemeral GitHub Actions runners.
+                # The HMAC authenticates the redirects, auth method and high-entropy
+                # client-secret digest, without storing or exposing the secret.
+                payload = json.dumps(
+                    {
+                        "redirect_uris": list(redirects),
+                        "token_endpoint_auth_method": method,
+                        "client_name": client_name,
+                        "secret_digest": digest,
+                        "issued_at": issued_at,
+                        "nonce": secrets.token_urlsafe(12),
+                    },
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode("utf-8")
+                signature = hmac.new(self._signing_key, payload, hashlib.sha256).digest()
+                client_id = (
+                    f"{SIGNED_CLIENT_ID_PREFIX}."
+                    f"{_b64url(payload)}.{_b64url(signature)}"
+                )
+                if len(client_id) > MAX_SIGNED_CLIENT_ID_CHARS:
+                    raise ValueError("OAuth client metadata exceeds signed client ID size limit")
             client = OAuthClient(
                 client_id=client_id,
                 redirect_uris=redirects,
                 token_endpoint_auth_method=method,
-                client_name=_optional_text(metadata.get("client_name"), 200),
-                secret_digest=_secret_digest(client_secret) if client_secret is not None else None,
+                client_name=client_name,
+                secret_digest=digest,
+                issued_at=issued_at,
             )
-            self._clients[client_id] = client
+            if self._signing_key is None:
+                self._clients[client_id] = client
         response: dict[str, Any] = {
             "client_id": client.client_id,
             "client_id_issued_at": client.issued_at,
@@ -125,7 +167,64 @@ class OAuthClientRegistry:
 
     def get(self, client_id: str) -> OAuthClient | None:
         with self._lock:
-            return self._clients.get(client_id)
+            client = self._clients.get(client_id)
+        return client if client is not None else self._verify_signed_client(client_id)
+
+    def _verify_signed_client(self, client_id: str) -> OAuthClient | None:
+        if (
+            self._signing_key is None
+            or not isinstance(client_id, str)
+            or len(client_id) > MAX_SIGNED_CLIENT_ID_CHARS
+        ):
+            return None
+        parts = client_id.split(".")
+        if len(parts) != 3 or parts[0] != SIGNED_CLIENT_ID_PREFIX:
+            return None
+        try:
+            payload = _decode_b64url(parts[1])
+            signature = _decode_b64url(parts[2])
+            if len(signature) != hashlib.sha256().digest_size:
+                return None
+            if not hmac.compare_digest(
+                hmac.new(self._signing_key, payload, hashlib.sha256).digest(),
+                signature,
+            ):
+                return None
+            data = json.loads(payload)
+            if not isinstance(data, dict) or set(data) != {
+                "redirect_uris", "token_endpoint_auth_method", "client_name",
+                "secret_digest", "issued_at", "nonce",
+            }:
+                return None
+            redirects = validate_redirect_uris(data["redirect_uris"])
+            method = data["token_endpoint_auth_method"]
+            name = data["client_name"]
+            digest = data["secret_digest"]
+            issued_at = data["issued_at"]
+            nonce = data["nonce"]
+            if method not in {"none", "client_secret_post", "client_secret_basic"}:
+                return None
+            if not isinstance(issued_at, int) or isinstance(issued_at, bool) or issued_at < 1:
+                return None
+            if not isinstance(nonce, str) or len(nonce) < 12 or len(nonce) > 64:
+                return None
+            if name is not None and (not isinstance(name, str) or len(name) > 200):
+                return None
+            if method == "none":
+                if digest is not None:
+                    return None
+            elif not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+                return None
+            return OAuthClient(
+                client_id=client_id,
+                redirect_uris=redirects,
+                token_endpoint_auth_method=method,
+                client_name=name,
+                secret_digest=digest,
+                issued_at=issued_at,
+            )
+        except (ValueError, TypeError, KeyError, UnicodeDecodeError):
+            return None
 
     def accepts_redirect(self, client_id: str, redirect_uri: str) -> bool:
         client = self.get(client_id)
@@ -216,6 +315,19 @@ def validate_access_token(token: str, config: OAuthConfig, server_url: str) -> b
         return False
     client_id = claims.get("client_id")
     return isinstance(client_id, str) and config.registry.get(client_id) is not None
+
+
+def _b64url(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+
+
+def _decode_b64url(value: str) -> bytes:
+    if not value or re.fullmatch(r"[A-Za-z0-9_-]+", value) is None:
+        raise ValueError("Invalid client ID encoding")
+    decoded = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+    if _b64url(decoded) != value:
+        raise ValueError("Non-canonical client ID encoding")
+    return decoded
 
 
 def _secret_digest(secret: str) -> str:

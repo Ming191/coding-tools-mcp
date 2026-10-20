@@ -4,10 +4,15 @@ on:
   workflow_call:
     inputs:
       image:
-        description: Docker image that contains coding-tools-mcp.
+        description: Use source to build this fork for each sandbox run, or supply a Docker image reference.
         required: false
         type: string
-        default: ghcr.io/xytom/coding-tools-mcp-sandbox:latest
+        default: source
+      source_ref:
+        description: Branch or tag in Ming191/coding-tools-mcp when image is source.
+        required: false
+        type: string
+        default: main
       port:
         description: Local MCP port exposed on the GitHub Actions runner.
         required: false
@@ -58,13 +63,21 @@ on:
       CODING_TOOLS_MCP_OAUTH_PASSWORD:
         description: Password for OAuth authorization. Required to enable OAuth mode.
         required: false
+      CODING_TOOLS_MCP_OAUTH_TOKEN_SECRET:
+        description: Stable 32+ byte hex secret for OAuth JWTs and restart-safe DCR client IDs.
+        required: false
   workflow_dispatch:
     inputs:
       image:
-        description: Docker image that contains coding-tools-mcp.
+        description: Use source to build this fork for each sandbox run, or supply a Docker image reference.
         required: true
         type: string
-        default: ghcr.io/xytom/coding-tools-mcp-sandbox:latest
+        default: source
+      source_ref:
+        description: Branch or tag in Ming191/coding-tools-mcp when image is source.
+        required: true
+        type: string
+        default: main
       port:
         description: Local MCP port exposed on the GitHub Actions runner.
         required: true
@@ -268,9 +281,11 @@ jobs:
       - name: Start coding-tools-mcp container
         env:
           IMAGE: ${{ inputs.image }}
+          MCP_SOURCE_REF: ${{ inputs.source_ref }}
           MCP_PORT: ${{ steps.settings.outputs.port }}
           MCP_TOKEN_FILE: ${{ steps.settings.outputs.token_file }}
           MCP_OAUTH_PASSWORD: ${{ secrets.CODING_TOOLS_MCP_OAUTH_PASSWORD }}
+          MCP_OAUTH_TOKEN_SECRET: ${{ secrets.CODING_TOOLS_MCP_OAUTH_TOKEN_SECRET }}
           PERMISSION_MODE: ${{ steps.settings.outputs.permission_mode }}
           PUBLIC_SERVER_URL: ${{ steps.settings.outputs.public_server_url }}
           GIT_CONFIG: ${{ steps.settings.outputs.git_config }}
@@ -283,8 +298,27 @@ jobs:
             exit 1
           fi
           echo "::add-mask::$MCP_OAUTH_PASSWORD"
+          if [[ -z "${MCP_OAUTH_TOKEN_SECRET:-}" ]]; then
+            echo "Missing CODING_TOOLS_MCP_OAUTH_TOKEN_SECRET GitHub Actions secret" >&2
+            exit 1
+          fi
+          echo "::add-mask::$MCP_OAUTH_TOKEN_SECRET"
+          if ! [[ "$MCP_OAUTH_TOKEN_SECRET" =~ ^[[:xdigit:]]{64,}$ ]] || (( ${#MCP_OAUTH_TOKEN_SECRET} % 2 != 0 )); then
+            echo "CODING_TOOLS_MCP_OAUTH_TOKEN_SECRET must be at least 32 bytes as even-length hex" >&2
+            exit 1
+          fi
 
-          docker pull "$IMAGE"
+          if [[ "$IMAGE" == "source" ]]; then
+            # Build from this fork, not the upstream image that lacks this fix.
+            # Supports a reusable workflow invoked from an unrelated caller repo.
+            source_dir="$(mktemp -d)"
+            git clone --quiet --depth 1 --branch "$MCP_SOURCE_REF" \
+              https://github.com/Ming191/coding-tools-mcp.git "$source_dir"
+            docker build --tag coding-tools-mcp-sandbox:local "$source_dir"
+            IMAGE="coding-tools-mcp-sandbox:local"
+          else
+            docker pull "$IMAGE"
+          fi
           docker rm -f coding-tools-mcp-sandbox >/dev/null 2>&1 || true
           MCP_TOKEN="$(cat "$MCP_TOKEN_FILE")"
 
@@ -300,6 +334,7 @@ jobs:
             -e "CODING_TOOLS_MCP_AUTH_TOKEN=$MCP_TOKEN"
             -e "CODING_TOOLS_MCP_AUTH_MODE=oauth"
             -e "CODING_TOOLS_MCP_OAUTH_PASSWORD=$MCP_OAUTH_PASSWORD"
+            -e "CODING_TOOLS_MCP_OAUTH_TOKEN_SECRET=$MCP_OAUTH_TOKEN_SECRET"
             -e "CODING_TOOLS_MCP_PERMISSION_MODE=$PERMISSION_MODE"
             -e CODING_TOOLS_MCP_EXEC_ALLOW_ROOTS=/etc/java-17-openjdk:/etc/maven:/etc/coding-tools-mcp
             -e "CODING_TOOLS_MCP_SHELL_ENV_SET=$shell_env_set"

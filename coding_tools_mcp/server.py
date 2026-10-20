@@ -47,6 +47,7 @@ from .oauth import (
     MAX_PENDING_CODES,
     OAUTH_TOKEN_TTL_SECONDS,
     OAuthConfig,
+    OAuthClientRegistry,
     create_access_token,
     valid_pkce_challenge,
     validate_access_token,
@@ -7558,6 +7559,9 @@ def run_http(args: argparse.Namespace) -> int:
             server_url=server_url,
             token_secret=token_secret,
             token_ttl=token_ttl,
+            # Only an operator-provided, stable key can make signed DCR IDs
+            # survive restarts; keep legacy process-local mode otherwise.
+            registry=OAuthClientRegistry(signing_key=token_secret if raw_secret else None),
         )
         if client_id:
             raw_redirects = os.environ.get(f"{ENV_PREFIX}_OAUTH_REDIRECT_URIS") or "http://127.0.0.1/callback"

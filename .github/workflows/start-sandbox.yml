@@ -55,6 +55,9 @@ on:
       CODING_TOOLS_MCP_AUTH_TOKEN:
         description: Optional stable MCP bearer token. Used when auth_token is blank.
         required: false
+      CODING_TOOLS_MCP_OAUTH_PASSWORD:
+        description: Password for OAuth authorization. Required to enable OAuth mode.
+        required: false
   workflow_dispatch:
     inputs:
       image:
@@ -267,12 +270,19 @@ jobs:
           IMAGE: ${{ inputs.image }}
           MCP_PORT: ${{ steps.settings.outputs.port }}
           MCP_TOKEN_FILE: ${{ steps.settings.outputs.token_file }}
+          MCP_OAUTH_PASSWORD: ${{ secrets.CODING_TOOLS_MCP_OAUTH_PASSWORD }}
           PERMISSION_MODE: ${{ steps.settings.outputs.permission_mode }}
           PUBLIC_SERVER_URL: ${{ steps.settings.outputs.public_server_url }}
           GIT_CONFIG: ${{ steps.settings.outputs.git_config }}
         shell: bash
         run: |
           set -euo pipefail
+
+          if [[ -z "${MCP_OAUTH_PASSWORD:-}" ]]; then
+            echo "Missing CODING_TOOLS_MCP_OAUTH_PASSWORD GitHub Actions secret" >&2
+            exit 1
+          fi
+          echo "::add-mask::$MCP_OAUTH_PASSWORD"
 
           docker pull "$IMAGE"
           docker rm -f coding-tools-mcp-sandbox >/dev/null 2>&1 || true
@@ -288,6 +298,8 @@ jobs:
             -p "127.0.0.1:${MCP_PORT}:${MCP_PORT}"
             -e "CODING_TOOLS_MCP_PORT=$MCP_PORT"
             -e "CODING_TOOLS_MCP_AUTH_TOKEN=$MCP_TOKEN"
+            -e "CODING_TOOLS_MCP_AUTH_MODE=oauth"
+            -e "CODING_TOOLS_MCP_OAUTH_PASSWORD=$MCP_OAUTH_PASSWORD"
             -e "CODING_TOOLS_MCP_PERMISSION_MODE=$PERMISSION_MODE"
             -e CODING_TOOLS_MCP_EXEC_ALLOW_ROOTS=/etc/java-17-openjdk:/etc/maven:/etc/coding-tools-mcp
             -e "CODING_TOOLS_MCP_SHELL_ENV_SET=$shell_env_set"

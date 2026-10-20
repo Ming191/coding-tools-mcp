@@ -103,12 +103,12 @@ on:
         options:
           - quick
           - named
-        default: quick
+        default: named
       tunnel_hostname:
         description: Public hostname for a named Cloudflare Tunnel, without scheme.
         required: false
         type: string
-        default: ""
+        default: "mcp.minhndn.tech"
 
 permissions:
   contents: write

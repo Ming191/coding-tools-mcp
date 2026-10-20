@@ -309,20 +309,20 @@ jobs:
               exit 1
             fi
             MCP_OAUTH_TOKEN_SECRET="$(python3 - <<'PY'
-import hashlib
-import hmac
-import os
+          import hashlib
+          import hmac
+          import os
 
-bearer = os.environ["MCP_AUTH_TOKEN_SECRET"]
-if len(bearer) < 32:
-    raise SystemExit("CODING_TOOLS_MCP_AUTH_TOKEN must have at least 32 characters when used as an OAuth signing key source")
-print(hmac.new(
-    bearer.encode("utf-8"),
-    b"coding-tools-mcp/oauth-token-secret/v1",
-    hashlib.sha256,
-).hexdigest())
-PY
-)"
+          bearer = os.environ["MCP_AUTH_TOKEN_SECRET"]
+          if len(bearer) < 32:
+              raise SystemExit("CODING_TOOLS_MCP_AUTH_TOKEN must have at least 32 characters when used as an OAuth signing key source")
+          print(hmac.new(
+              bearer.encode("utf-8"),
+              b"coding-tools-mcp/oauth-token-secret/v1",
+              hashlib.sha256,
+          ).hexdigest())
+          PY
+          )"
           fi
           echo "::add-mask::$MCP_OAUTH_TOKEN_SECRET"
           if ! [[ "$MCP_OAUTH_TOKEN_SECRET" =~ ^[[:xdigit:]]{64,}$ ]] || (( ${#MCP_OAUTH_TOKEN_SECRET} % 2 != 0 )); then

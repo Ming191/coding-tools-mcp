@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -223,7 +224,7 @@ class OAuthClientRegistry:
                 secret_digest=digest,
                 issued_at=issued_at,
             )
-        except (ValueError, TypeError, KeyError, UnicodeDecodeError):
+        except (ValueError, TypeError, KeyError, UnicodeDecodeError, binascii.Error):
             return None
 
     def accepts_redirect(self, client_id: str, redirect_uri: str) -> bool:
